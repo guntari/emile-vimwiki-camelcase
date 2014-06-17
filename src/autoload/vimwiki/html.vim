@@ -4,7 +4,15 @@
 " Author: Maxim Kim <habamax@gmail.com>
 " Home: http://code.google.com/p/vimwiki/
 
-" XXX: This file should be refactored!
+" TODO: We need vimwiki abstract syntax tree. If properly designed it wourld
+" greatly symplify different syntax to HTML generation.
+" 
+" vimwiki   --            --> PDF 
+"             \          /
+" markdown  -----> AST -----> HTML
+"             /          \
+" mediawiki --            --> Latex
+"
 
 " Load only once {{{
 if exists("g:loaded_vimwiki_html_auto") || &cp
@@ -95,8 +103,7 @@ function! s:template_full_name(name) "{{{
   endif
 
   let fname = expand(VimwikiGet('template_path').
-        \ name.
-        \ VimwikiGet('template_ext'))
+        \ name.VimwikiGet('template_ext'))
 
   if filereadable(fname)
     return fname
@@ -138,22 +145,12 @@ endfunction "}}}
 
 function! s:safe_html(line) "{{{
   " escape & < > when producing HTML text
-  " uses variables s:lt_pattern, s:gt_pattern that are
-  " set in vimwiki#html#Wiki2HTML() according to  g:vimwiki_valid_html_tags
-  "" htmlize symbols: < > &
-
+  " s:lt_pattern, s:gt_pattern depend on g:vimwiki_valid_html_tags
+  " and are set in vimwiki#html#Wiki2HTML()
   let line = substitute(a:line, '&', '\&amp;', 'g')
-  " the following depends on g:vimwiki_valid_html_tags
   let line = substitute(line,s:lt_pattern,'\&lt;', 'g')
   let line = substitute(line,s:gt_pattern,'\&gt;', 'g')
 
-  "let tags = join(split(g:vimwiki_valid_html_tags, '\s*,\s*'), '\|')
-  "let line = substitute(line,'<\%(/\?\%('
-  "      \.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?>\)\@!', 
-  "      \'\&lt;', 'g')
-  "let line = substitute(line,'\%(</\?\%('
-  "      \.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?\)\@<!>',
-  "      \'\&gt;', 'g')
   return line
 endfunction "}}}
 
@@ -167,8 +164,8 @@ function! s:delete_html_files(path) "{{{
 
     " delete if there is no corresponding wiki file
     let subdir = vimwiki#base#subdir(VimwikiGet('path_html'), fname)
-    let wikifile = VimwikiGet("path").subdir.
-          \fnamemodify(fname, ":t:r").VimwikiGet("ext")
+    let wikifile = VimwikiGet('path').subdir.
+          \fnamemodify(fname, ":t:r").VimwikiGet('ext')
     if filereadable(wikifile)
       continue
     endif
@@ -207,12 +204,6 @@ function! s:save_vimwiki_buffer() "{{{
   if &filetype == 'vimwiki'
     silent update
   endif
-endfunction "}}}
-
-function! s:trim(string) "{{{
-  let res = substitute(a:string, '^\s\+', '', '')
-  let res = substitute(res, '\s\+$', '', '')
-  return res
 endfunction "}}}
 
 function! s:get_html_toc(toc_list) "{{{
@@ -292,8 +283,7 @@ function! s:is_html_uptodate(wikifile) "{{{
   endif
 
   let wikifile = fnamemodify(a:wikifile, ":p")
-  let subdir = vimwiki#base#subdir(VimwikiGet('path'), wikifile)
-  let htmlfile = expand(VimwikiGet('path_html').subdir.
+  let htmlfile = expand(VimwikiGet('path_html').VimwikiGet('subdir').
         \fnamemodify(wikifile, ":t:r").".html")
 
   if getftime(wikifile) <= getftime(htmlfile) && tpl_time <= getftime(htmlfile)
@@ -369,265 +359,106 @@ endfunction "}}}
 "endfunction "}}}
 
 
-"{{{ Replacing/Refactoring tag_internal_link, tag_external_link,
-"   tag_wikiword_link, tag_barebone_link
-function! s:linkify_image(src, descr, style) "{{{
-  let src_str = ' src="'.a:src.'"'
-  let descr_str = ''
-  let style_str = ''
-  if a:descr != ''
-    let descr_str = ' alt="'.a:descr.'"'
+"{{{ v2.0 links
+"   match n-th ARG within {{URL[|ARG1|ARG2|...]}} " {{{
+" *c,d,e),...
+function! vimwiki#html#incl_match_arg(nn_index)
+  let rx = g:vimwiki_rxWikiInclPrefix. g:vimwiki_rxWikiInclUrl
+  let rx = rx. repeat(g:vimwiki_rxWikiInclSeparator. g:vimwiki_rxWikiInclArg, a:nn_index-1)
+  if a:nn_index > 0
+    let rx = rx. g:vimwiki_rxWikiInclSeparator. '\zs'. g:vimwiki_rxWikiInclArg. '\ze'
   endif
-  if a:style != ''
-    let style_str = ' style="'.a:style.'"'
-  endif
-  return '<img'.src_str.descr_str.style_str.' />'
-endfunction "}}}
+  let rx = rx. g:vimwiki_rxWikiInclArgs. g:vimwiki_rxWikiInclSuffix
+  return rx
+endfunction
+"}}}
 
-function! s:linkify_link(src, descr) "{{{
+function! vimwiki#html#linkify_link(src, descr) "{{{
   let src_str = ' href="'.a:src.'"'
-  let descr_str = ''
-  if a:descr != ''
-    if a:descr =~ g:vimwiki_rxImage
-      let descr_str = s:tag_image(a:descr)
-    elseif a:descr =~ g:vimwiki_rxImageUrl
-      let descr_str = s:linkify_image(a:descr, '', '')
-    else
-      let descr_str = a:descr
-    endif
-  endif
+  let descr = substitute(a:descr,'^\s*\(.*\)\s*$','\1','')
+  let descr = (descr == "" ? a:src : descr)
+  let descr_str = (descr =~ g:vimwiki_rxWikiIncl 
+        \ ? s:tag_wikiincl(descr) 
+        \ : descr)
   return '<a'.src_str.'>'.descr_str.'</a>'
 endfunction "}}}
 
-function s:linkify_dirlink(src, descr) "{{{
-  let dir_link = ''
-  if g:vimwiki_dir_link != ''
-    let dir_link = g:vimwiki_dir_link.'.html'
-  endif
-  return s:linkify_link(a:src.dir_link, a:descr)
-endfunction "}}}
-
-function! s:tag_image(value) "{{{
-  let str = a:value
-  let url = matchstr(str, g:vimwiki_rxImageMatchUrl)
-  let descr = matchstr(str, g:vimwiki_rxImageMatchDescr)
-  let style = matchstr(str, g:vimwiki_rxImageMatchStyle)
-  let line = s:linkify_image(url, descr, style)
-  return line
+function! vimwiki#html#linkify_image(src, descr, verbatim_str) "{{{
+  let src_str = ' src="'.a:src.'"'
+  let descr_str = (a:descr != '' ? ' alt="'.a:descr.'"' : '')
+  let verbatim_str = (a:verbatim_str != '' ? ' '.a:verbatim_str : '')
+  return '<img'.src_str.descr_str.verbatim_str.' />'
 endfunction "}}}
 
 function! s:tag_weblink(value) "{{{
-  " [[url]]                     -> <a href="url">url</a>
-  " [[imgurl]]                  -> <a href="imgurl"><img src="imgurl"/></a>
-  " [descr](url),"descr":url, or
-  "   [url descr]               -> <a href="url">descr</a>
-  " [imgurl](url),"imgurl":url, or
-  "   [url imgurl]              -> <a href="url"><img src="imgurl"/></a>
+  " Weblink Template -> <a href="url">descr</a>
   let str = a:value
   let url = matchstr(str, g:vimwiki_rxWeblinkMatchUrl)
   let descr = matchstr(str, g:vimwiki_rxWeblinkMatchDescr)
-  if descr == ""
-    let descr = url
+  let line = vimwiki#html#linkify_link(url, descr)
+  return line
+endfunction "}}}
+
+function! s:tag_wikiincl(value) "{{{
+  " {{imgurl|arg1|arg2}}    -> ???
+  " {{imgurl}}                -> <img src="imgurl"/>
+  " {{imgurl|descr|style="A"}} -> <img src="imgurl" alt="descr" style="A" />
+  " {{imgurl|descr|class="B"}} -> <img src="imgurl" alt="descr" class="B" />
+  let str = a:value
+  " custom transclusions
+  let line = VimwikiWikiIncludeHandler(str)
+  " otherwise, assume image transclusion
+  if line == ''
+    let url_0 = matchstr(str, g:vimwiki_rxWikiInclMatchUrl)
+    let descr = matchstr(str, vimwiki#html#incl_match_arg(1))
+    let verbatim_str = matchstr(str, vimwiki#html#incl_match_arg(2))
+    " resolve url
+    let [idx, scheme, path, subdir, lnk, ext, url] = 
+          \ vimwiki#base#resolve_scheme(url_0, 1)
+    " generate html output
+    " TODO: migrate non-essential debugging messages into g:VimwikiLog
+    if g:vimwiki_debug > 1
+      echom '{{idx='.idx.', scheme='.scheme.', path='.path.', subdir='.subdir.', lnk='.lnk.', ext='.ext.'}}'
+    endif
+
+    " Issue 343: Image transclusions: schemeless links have .html appended.
+    " If link is schemeless pass it as it is
+    if scheme == ''
+      let url = lnk
+    endif
+
+    let url = escape(url, '#')
+    let line = vimwiki#html#linkify_image(url, descr, verbatim_str)
+    return line
   endif
-  let line = s:linkify_link(url, descr)
   return line
 endfunction "}}}
 
 function! s:tag_wikilink(value) "{{{
-  " [[url]]                        -> <a href="url.html">url</a>
-  " [[url|descr]],[[url][descr]]   -> <a href="url.html">descr</a>
-  " [[url|imgurl]],[[url][imgurl]] -> <a href="url.html"><img src="imgurl"/></a>
-  " [[fileurl.ext][descr]]         -> <a href="fileurl.ext/index.html">descr</a>
-  " [[dirurl/][descr]]             -> <a href="dirurl/index.html">descr</a>
+  " [[url]]                -> <a href="url.html">url</a>
+  " [[url|descr]]         -> <a href="url.html">descr</a>
+  " [[url|{{...}}]]        -> <a href="url.html"> ... </a>
+  " [[fileurl.ext|descr]] -> <a href="fileurl.ext">descr</a>
+  " [[dirurl/|descr]]     -> <a href="dirurl/index.html">descr</a>
   let str = a:value
-  if match(str, g:vimwiki_wikiword_escape_prefix) == 0
-    return a:value[len(g:vimwiki_wikiword_escape_prefix):]
-  endif
   let url = matchstr(str, g:vimwiki_rxWikiLinkMatchUrl)
   let descr = matchstr(str, g:vimwiki_rxWikiLinkMatchDescr)
-  if descr == ""
-    let descr = url
+  let descr = (substitute(descr,'^\s*\(.*\)\s*$','\1','') != '' ? descr : url)
+
+  " resolve url
+  let [idx, scheme, path, subdir, lnk, ext, url] = 
+        \ vimwiki#base#resolve_scheme(url, 1)
+
+  " generate html output
+  " TODO: migrate non-essential debugging messages into g:VimwikiLog
+  if g:vimwiki_debug > 1
+    echom '[[idx='.idx.', scheme='.scheme.', path='.path.', subdir='.subdir.', lnk='.lnk.', ext='.ext.']]'
   endif
-  if vimwiki#base#is_link_to_dir(url)
-    " [[directoryurl/][descr]]
-    let line = s:linkify_dirlink(url, descr)
-  elseif vimwiki#base#is_non_wiki_link(url)
-    " [[fileurl.ext][descr]]
-    let line = s:linkify_link(url, descr)
-  else
-    " [[url]], [[url|descr]], [[url][descr]], [[url|imgurl]], [[url][imgurl]]
-    let line = s:linkify_link(vimwiki#base#safe_link(url).'.html', descr)
-  endif
+  let line = vimwiki#html#linkify_link(url, descr)
   return line
 endfunction "}}}
-"}}} Replacing/Refactoring tag_internal_link, tag_external_link,
-"   tag_wikiword_link, tag_barebone_link
+"}}}
 
-
-"
-"
-"
-"
-"{{{ Deprecated/Refactored by linkify_image, linkify_link, tag_image,
-"   tag_weblink, and tag_wikilink
-"
-function! s:tag_internal_link(value) "{{{
-  " Make <a href="This is a link">This is a link</a>
-  " from [[This is a link]]
-  " Make <a href="link">This is a link</a>
-  " from [[link|This is a link]]
-  " Make <a href="link">This is a link</a>
-  " from [[link][This is a link]]
-  " TODO: rename function -- it makes not only internal links.
-  " TODO: refactor it.
-
-  function! s:linkify(src, caption, style) "{{{
-    if a:style == ''
-      let style_str = ''
-    else
-      let style_str = ' style="'.a:style.'"'
-    endif
-
-    if s:is_img_link(a:caption)
-      " [[url|imgurl]] 
-      "   !! The meaning of this syntax has changed in s:tag_wikilink v1.3.
-      "
-      " [[url|imgurl|style]] and [[url][imgurl][style]] 
-      "   !? These syntaxes were NOT DOCUMENTED in (:help vimwiki) v1.2
-      "   !! The meaning of this syntax has changed in s:tag_wikilink v1.3.
-      "
-      " Use weblink formats to create thumbnail links 
-      "   e.g. : [imgurl](url), "imgurl":url, or [url imgurl]
-      " XXX: see s:tag_wikilink(), s:tag_image(), s:linkify_link(), and
-      " s:linkify_image()
-      let link = '<a href="'.a:src.'"><img src="'.a:caption.'"'.style_str.' />'.
-            \ '</a>'
-    elseif vimwiki#base#is_non_wiki_link(a:src)
-      " XXX: see s:tag_wikilink(), s:linkify_link()
-      let link = '<a href="'.a:src.'">'.a:caption.'</a>'
-    elseif s:is_img_link(a:src)
-      " XXX: see s:tag_image() and s:linkify_image()
-      let link = '<img src="'.a:src.'" alt="'.a:caption.'"'. style_str.' />'
-    elseif vimwiki#base#is_link_to_dir(a:src)
-      " XXX: see s:tag_wikilink(), s:linkify_dirlink()
-      if g:vimwiki_dir_link == ''
-        let link = '<a href="'.vimwiki#base#safe_link(a:src).'">'.a:caption.'</a>'
-      else
-        let link = '<a href="'.vimwiki#base#safe_link(a:src).
-              \ g:vimwiki_dir_link.'.html">'.a:caption.'</a>'
-      endif
-    else
-      " XXX: see s:tag_wikilink() and s:linkify_link()
-      let link = '<a href="'.vimwiki#base#safe_link(a:src).
-            \ '.html">'.a:caption.'</a>'
-    endif
-
-    return link
-  endfunction "}}}
-
-  let value = s:mid(a:value, 2)
-
-  let line = ''
-  if value =~ '|'
-    let link_parts = split(value, "|", 1)
-  else
-    let link_parts = split(value, "][", 1)
-  endif
-
-
-  if len(link_parts) > 1
-    if len(link_parts) < 3
-      let style = ""
-    else
-      let style = link_parts[2]
-    endif
-
-    let line = s:linkify(link_parts[0], link_parts[1], style)
-
-  else
-    let line = s:linkify(value, value, '')
-  endif
-  return line
-endfunction "}}}
-
-function! s:tag_external_link(value) "{{{
-  "" Make <a href="link">link desc</a>
-  "" from [link link desc]
-
-  let value = s:mid(a:value, 1)
-
-  let line = ''
-  if s:is_web_link(value)
-    let lnkElements = split(value)
-    let head = lnkElements[0]
-    let rest = join(lnkElements[1:])
-    if rest==""
-      let rest=head
-    endif
-    if s:is_img_link(rest)
-      if rest!=head
-        " XXX: see s:tag_weblink, s:tag_image, s:linkify_link, and s:linkify_image
-        let line = '<a href="'.head.'"><img src="'.rest.'" /></a>'
-      else
-        " XXX: see s:tag_weblink, s:tag_image, s:linkify_link, and s:linkify_image
-        let line = '<img src="'.rest.'" />'
-      endif
-    else
-      let line = '<a href="'.head.'">'.rest.'</a>'
-    endif
-  elseif s:is_img_link(value)
-      " XXX: this syntax has been deprecated in favor of [[-wikilink syntax
-    let line = '<img src="'.value.'" />'
-  else
-    " [alskfj sfsf] shouldn't be a link. So return it as it was --
-    " enclosed in [...]
-    let line = '['.value.']'
-  endif
-  return line
-endfunction "}}}
-
-function! s:tag_wikiword_link(value) "{{{
-  " Make <a href="WikiWord">WikiWord</a> from WikiWord
-
-  " XXX: see s:tag_wikilink and s:linkify_link
-  if a:value[0] =~ g:vimwiki_wikiword_escape_prefix
-    return a:value[1:]
-  elseif g:vimwiki_camel_case
-    let line = '<a href="'.a:value.'.html">'.a:value.'</a>'
-    return line
-  else
-    return a:value
-  endif
-endfunction "}}}
-
-function! s:tag_barebone_link(value) "{{{
-  "" Make <a href="http://habamax.ru">http://habamax.ru</a>
-  "" from http://habamax.ru
-
-  " XXX: see s:tag_weblink and s:linkify_link
-  if s:is_img_link(a:value)
-    let line = '<img src="'.a:value.'" />'
-  else
-    let line = '<a href="'.a:value.'">'.a:value.'</a>'
-  endif
-  return line
-endfunction "}}}
-"
-"}}} Deprecated/Refactored by linkify_image, linkify_link, tag_image,
-"   tag_weblink, and tag_wikilink
-"
-"
-"
-
-function! s:tag_no_wikiword_link(value) "{{{
-  echomsg "tag_no_wikiword_link: ".a:value
-
-  if a:value[0] =~ g:vimwiki_wikiword_escape_prefix
-    return a:value[1:]
-  else
-    return a:value
-  endif
-endfunction "}}}
 
 function! s:tag_remove_internal_link(value) "{{{
   let value = s:mid(a:value, 2)
@@ -716,7 +547,6 @@ endfunction " }}}
 
 function! s:process_tags_typefaces(line) "{{{
   let line = a:line
-  let line = s:make_tag(line, g:vimwiki_rxNoWikiWord, 's:tag_no_wikiword_link')
   let line = s:make_tag(line, g:vimwiki_rxItalic, 's:tag_em')
   let line = s:make_tag(line, g:vimwiki_rxBold, 's:tag_strong')
   let line = s:make_tag(line, g:vimwiki_rxTodo, 's:tag_todo')
@@ -730,15 +560,9 @@ endfunction " }}}
 
 function! s:process_tags_links(line) " {{{
   let line = a:line
-  let line = s:make_tag(line, g:vimwiki_rxImage, 's:tag_image')
-  let line = s:make_tag(line, g:vimwiki_rxWeblink, 's:tag_weblink')
   let line = s:make_tag(line, g:vimwiki_rxWikiLink, 's:tag_wikilink')
-"{{{ Replaced by tag_image, tag_weblink, and tag_wikilink
-" let line = s:make_tag(line, '\[\[.\{-}\]\]', 's:tag_internal_link')
-" let line = s:make_tag(line, '\[.\{-}\]', 's:tag_external_link')
-" let line = s:make_tag(line, g:vimwiki_rxWeblink, 's:tag_barebone_link')
-" let line = s:make_tag(line, g:vimwiki_rxWikiWord, 's:tag_wikiword_link')
-"}}}
+  let line = s:make_tag(line, g:vimwiki_rxWikiIncl, 's:tag_wikiincl')
+  let line = s:make_tag(line, g:vimwiki_rxWeblink, 's:tag_weblink')
   return line
 endfunction " }}}
 
@@ -1168,7 +992,7 @@ function! s:process_tag_h(line, id) "{{{
   let h_id = ''
 
   if a:line =~ g:vimwiki_rxHeader
-    let h_level = vimwiki#base#count_first_sym(a:line)
+    let h_level = vimwiki#u#count_first_sym(a:line)
   endif
   if h_level > 0
     let a:id[h_level] += 1
@@ -1198,7 +1022,7 @@ function! s:process_tag_h(line, id) "{{{
       let h_part .= '>'
     endif
 
-    let h_text = s:trim(matchstr(line, g:vimwiki_rxHeader))
+    let h_text = vimwiki#u#trim(matchstr(line, g:vimwiki_rxHeader))
 
     if g:vimwiki_html_header_numbering
       let num = matchstr(h_number, 
@@ -1274,7 +1098,8 @@ function! s:process_tag_table(line, table) "{{{
     call extend(table, s:table_add_row(a:table, a:line))
 
     let processed = 1
-    let cells = split(a:line, vimwiki#tbl#cell_splitter(), 1)[1: -2]
+    " let cells = split(a:line, vimwiki#tbl#cell_splitter(), 1)[1: -2]
+    let cells = vimwiki#tbl#get_cells(a:line)
     call map(cells, 's:table_empty_cell(v:val)')
     call extend(table[-1], cells)
   else
@@ -1524,31 +1349,33 @@ endfunction " }}}
 
 function! vimwiki#html#CustomWiki2HTML(path, wikifile, force) "{{{
   call vimwiki#base#mkdir(a:path)
-  execute '!'.VimwikiGet('custom_wiki2html'). ' '
+  echomsg system(VimwikiGet('custom_wiki2html'). ' '.
       \ a:force. ' '.
-      \ VimwikiGet('syntax')
+      \ VimwikiGet('syntax'). ' '.
       \ strpart(VimwikiGet('ext'), 1). ' '.
-      \ a:path. ' '.
-      \ a:wikifile. ' '.
-      \ s:default_CSS_full_name(a:path)
+      \ shellescape(a:path, 1). ' '.
+      \ shellescape(a:wikifile, 1). ' '.
+      \ shellescape(s:default_CSS_full_name(a:path), 1). ' '.
+      \ (len(VimwikiGet('template_path'))    > 1 ? shellescape(expand(VimwikiGet('template_path')), 1) : '-'). ' '.
+      \ (len(VimwikiGet('template_default')) > 0 ? VimwikiGet('template_default')                      : '-'). ' '.
+      \ (len(VimwikiGet('template_ext'))     > 0 ? VimwikiGet('template_ext')                          : '-'). ' '.
+      \ (len(VimwikiGet('subdir'))           > 0 ? shellescape(s:root_path(VimwikiGet('subdir')), 1)   : '-'))
 endfunction " }}}
 
-function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
+function! vimwiki#html#Wiki2HTML(path_html, wikifile) "{{{
 
   let starttime = reltime()  " start the clock
 
   let done = 0
 
   let wikifile = fnamemodify(a:wikifile, ":p")
-  " shouldn't we be using a:path passed as an argument !?
-  let subdir = vimwiki#base#subdir(VimwikiGet('path'), wikifile)
 
-  let path = expand(a:path).subdir
+  let path_html = expand(a:path_html).VimwikiGet('subdir') 
   let htmlfile = fnamemodify(wikifile, ":t:r").'.html'
 
   if s:use_custom_wiki2html()
     let force = 1
-    call vimwiki#html#CustomWiki2HTML(path, wikifile, force)
+    call vimwiki#html#CustomWiki2HTML(path_html, wikifile, force)
     let done = 1
   endif
 
@@ -1556,11 +1383,11 @@ function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
     let lsource = readfile(wikifile)
     let ldest = []
 
-    if g:vimwiki_debug
-      echo 'Generating HTML ... '
-    endif
+    "if g:vimwiki_debug
+    "  echo 'Generating HTML ... '
+    "endif
 
-    call vimwiki#base#mkdir(path)
+    call vimwiki#base#mkdir(path_html)
 
     " nohtml placeholder -- to skip html generation.
     let nohtml = 0
@@ -1589,8 +1416,8 @@ function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
     let s:gt_pattern = '>'
     if g:vimwiki_valid_html_tags != ''
       let tags = join(split(g:vimwiki_valid_html_tags, '\s*,\s*'), '\|')
-      let s:lt_pattern = '<\%(/\?\%('.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?>\)\@!' 
-      let s:gt_pattern = '\%(</\?\%('.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?\)\@<!>'
+      let s:lt_pattern = '\c<\%(/\?\%('.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?>\)\@!' 
+      let s:gt_pattern = '\c\%(</\?\%('.tags.'\)\%(\s\{-1}\S\{-}\)\{-}/\?\)\@<!>'
     endif
 
     for line in lsource
@@ -1648,7 +1475,7 @@ function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
     " processing template variables (refactor to a function)
     call map(html_lines, 'substitute(v:val, "%title%", "'. title .'", "g")')
     call map(html_lines, 'substitute(v:val, "%root_path%", "'.
-          \ s:root_path(subdir) .'", "g")')
+          \ s:root_path(VimwikiGet('subdir')) .'", "g")')
 
     let css_name = expand(VimwikiGet('css_name'))
     let css_name = substitute(css_name, '\', '/', 'g')
@@ -1663,7 +1490,7 @@ function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
     let html_lines = s:html_insert_contents(html_lines, ldest) " %contents%
     
     "" make html file.
-    call writefile(html_lines, path.htmlfile)
+    call writefile(html_lines, path_html.htmlfile)
     let done = 1
 
   endif
@@ -1673,18 +1500,18 @@ function! vimwiki#html#Wiki2HTML(path, wikifile) "{{{
     return
   endif
 
-  " measure the elapsed time and cut away miliseconds and smaller
-  let elapsedtimestr = matchstr(reltimestr(reltime(starttime)),'\d\+\(\.\d\d\)\=')
-  if g:vimwiki_debug
-    echon "\r".htmlfile.' written (time: '.elapsedtimestr.'s)'
-  else
-    echo 'HTML conversion is done.'
-  endif
-  return path.htmlfile
+  " measure the elapsed time 
+  let time1 = vimwiki#u#time(starttime)  "XXX
+  call VimwikiLog_extend('html',[htmlfile,time1])
+  "if g:vimwiki_debug
+  "  echon "\r".htmlfile.' written (time: '.time1.'s)'
+  "endif
+
+  return path_html.htmlfile
 endfunction "}}}
 
 
-function! vimwiki#html#WikiAll2HTML(path) "{{{
+function! vimwiki#html#WikiAll2HTML(path_html) "{{{
   if !s:syntax_supported() && !s:use_custom_wiki2html()
     echomsg 'vimwiki: conversion to HTML is not supported for this syntax!!!'
     return
@@ -1698,33 +1525,63 @@ function! vimwiki#html#WikiAll2HTML(path) "{{{
   exe 'buffer '.cur_buf
   let &eventignore = save_eventignore
 
-  let path = expand(a:path)
-  call vimwiki#base#mkdir(path)
+  let path_html = expand(a:path_html)
+  call vimwiki#base#mkdir(path_html)
 
   echomsg 'Deleting non-wiki html files...'
-  call s:delete_html_files(path)
+  call s:delete_html_files(path_html)
 
   echomsg 'Converting wiki to html files...'
   let setting_more = &more
   setlocal nomore
 
+  " temporarily adjust current_subdir global state variable
+  let current_subdir = VimwikiGet('subdir')
+  let current_invsubdir = VimwikiGet('invsubdir')
+
   let wikifiles = split(glob(VimwikiGet('path').'**/*'.VimwikiGet('ext')), '\n')
   for wikifile in wikifiles
+    let wikifile = fnamemodify(wikifile, ":p")
+
+    " temporarily adjust 'subdir' and 'invsubdir' state variables
+    let subdir = vimwiki#base#subdir(VimwikiGet('path'), wikifile)
+    call VimwikiSet('subdir', subdir)
+    call VimwikiSet('invsubdir', vimwiki#base#invsubdir(subdir))
+
     if !s:is_html_uptodate(wikifile)
       echomsg 'Processing '.wikifile
-      call vimwiki#html#Wiki2HTML(path, wikifile)
+
+      call vimwiki#html#Wiki2HTML(path_html, wikifile)
     else
       echomsg 'Skipping '.wikifile
     endif
   endfor
-  call s:create_default_CSS(path)
+  " reset 'subdir' state variable
+  call VimwikiSet('subdir', current_subdir)
+  call VimwikiSet('invsubdir', current_invsubdir)
+
+  call s:create_default_CSS(path_html)
   echomsg 'Done!'
 
   let &more = setting_more
 endfunction "}}}
 
 function! s:file_exists(fname) "{{{
-  return !empty(getftype(a:fname))
+  return !empty(getftype(expand(a:fname)))
 endfunction "}}}
 
+" uses VimwikiGet('path')
+function! vimwiki#html#get_wikifile_url(wikifile) "{{{
+  return VimwikiGet('path_html').
+    \ vimwiki#base#subdir(VimwikiGet('path'), a:wikifile).
+    \ fnamemodify(a:wikifile, ":t:r").'.html'
+endfunction "}}}
+
+function! vimwiki#html#PasteUrl(wikifile) "{{{
+  execute 'r !echo file://'.vimwiki#html#get_wikifile_url(a:wikifile)
+endfunction "}}}
+
+function! vimwiki#html#CatUrl(wikifile) "{{{
+  execute '!echo file://'.vimwiki#html#get_wikifile_url(a:wikifile)
+endfunction "}}}
 "}}}
