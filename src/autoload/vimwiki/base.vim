@@ -2,6 +2,7 @@
 " Vimwiki autoload plugin file
 " Author: Maxim Kim <habamax@gmail.com>
 " Home: http://code.google.com/p/vimwiki/
+" foo
 
 if exists("g:loaded_vimwiki_auto") || &cp
   finish
